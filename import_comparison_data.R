@@ -65,15 +65,131 @@ datasets <- c("acs1", "acs1/subject", "acs1/profile")
 
 vars <- map_df(datasets, function(x) load_variables(year = 2017, dataset = x))
 
-# import county and place population datasets
-df <- map_df(c("county", "place"),
-             function (x) {
-               get_acs(geography = x,
-                       state = 'nc',
-                       year = 2017,
-                       table = "DP05") %>%
-                 mutate(geography = !! x)
-              }
-             ) %>%
+# import county and place population datasets -------------------
+
+# import palce and identify largest population place in each county
+pop_place <- get_acs(geography = "place",
+                     state = 'nc',
+                     year = 2017,
+                     table = "DP05") %>%
+                 mutate(geography = "place") %>%
   # merge variable descriptions
   left_join(vars, by = c("variable" = "name"))
+
+# identify largest palce in county
+place_total_pop <- pop_place %>%
+  # isolate total place populations
+  filter(label == "Estimate!!SEX AND AGE!!Total population") %>%
+  # join county lookup table, so we know what county the palce is in
+  left_join(place_table, by = c("GEOID" = "GEOID_place")) %>%
+  select(-place_name)
+
+# we'll manually add counties to cities with population over 10000 and werent matched
+# these represent places in more than one county
+manual_add_county <- place_total_pop %>%
+  filter((is.na(county_name) & estimate > 15000)) %>%
+  select(GEOID)
+
+add_counties <- c(37001, 37183, 37135, 37101, 37063, 37139, 37035,37081,
+                  37025, 37067, 37179, 37183, 37183, 37065, 37057, 37069)
+
+manual_add_county$GEOID_county <- add_counties
+
+# add missing county values
+place_total_pop <- place_total_pop %>%
+  left_join(manual_add_county, by = "GEOID") %>%
+  mutate(GEOID_county.x = ifelse(is.na(GEOID_county.x), GEOID_county.y, GEOID_county.x)) %>%
+  select(-GEOID_county.y) %>%
+  rename(GEOID_county = GEOID_county.x) %>%
+  # now we need to add the county names for these missing values
+  left_join(county_names, by = c("GEOID_county" = "GEOID")) %>%
+  mutate(county_name.x = ifelse(is.na(county_name.x), county_name.y, county_name.x)) %>%
+  select(-county_name.y, -row_num) %>%
+  rename(county_name = county_name.x)
+
+# select most populated city in each county
+city_county_lookup <- place_total_pop %>%
+  group_by(GEOID_county) %>%
+  # create column showing the most populated city
+  mutate(most_pop = max(estimate)) %>%
+  # filter for this population
+  filter(estimate == most_pop,
+         # remove NA
+         !is.na(GEOID_county)) %>%
+  ungroup() %>%
+  select(GEOID, NAME, GEOID_county, county_name, estimate)
+
+# filter our primary dataset to only keep the most populace places
+pop_place <- pop_place %>%
+  filter(GEOID %in% pop_city$GEOID) %>%
+  # add county to dataset
+  left_join(city_county_lookup[, c("GEOID", "GEOID_county", "county_name")], by = "GEOID")
+  
+# remove unneeded items
+rm(county_places, manual_add_county, place_long, place_names, place_table,
+   place_total_pop, add_counties, county_names)
+
+# import county population data and merge with population
+
+# import county data
+pop_county <- get_acs(geography = "county",
+                     state = 'nc',
+                     year = 2017,
+                     table = "DP05") %>%
+  mutate(geography = "county") %>%
+  # merge variable descriptions
+  left_join(vars, by = c("variable" = "name"))
+
+# stack county data to place data
+pop <- bind_rows(pop_place, pop_county)
+
+# filter population data ------------------------
+
+# we'll filter the data by pulling out the total population, 
+# race, and age data separately
+# then, we will recombine
+
+# total population
+total <- pop %>%
+  # isolate total place populations
+  filter(label == "Estimate!!SEX AND AGE!!Total population")
+
+# median age
+age <- pop %>%
+  filter(label == "Estimate!!SEX AND AGE!!Median age (years)")
+
+# race / ethnicity
+white <- pop %>%
+  filter(str_detect(label, "^Percent.*!!Not Hispanic or Latino!!White alone"))
+
+aa <- pop %>%
+  filter(label == "Percent!!RACE!!One race!!Black or African American")
+
+hisp <- pop %>%
+  filter(str_detect(label, "^Percent!!HISPANIC.*of any race.$"))
+
+# recombine population data into one dataset -----------------------
+
+# create the skeleton dataset that the other datasets will be attached to
+# it will be based on the total dataset
+cleaned_df <- total %>%
+  select(GEOID, NAME, total_pop = estimate, total_moe = moe, GEOID_county, county_name)
+
+# create a function to merge the other datasets to the cleaned on
+merge_demo <- function(df, estimate_col, moe_col) {
+  
+  df <- df %>%
+    select(GEOID, estimate, moe)
+  
+  colnames(df) <- c("GEOID", estimate_col, moe_col)
+  
+  cleaned <- cleaned_df %>%
+    left_join(df, by = "GEOID")
+  
+  return(cleaned)
+  
+}
+cleaned_df <- merge_demo(age, "age_pop", "age_moe")
+cleaned_df <- merge_demo(white, "white_perc", "white_moe")
+cleaned_df <- merge_demo(aa, "aa_perc", "aa_moe")
+cleaned_df <- merge_demo(hisp, "hisp_perc", "hisp_moe")
