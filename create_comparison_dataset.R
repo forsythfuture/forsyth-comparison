@@ -1,9 +1,12 @@
-library(tidyverse)
 library(tidycensus)
 library(FFtools)
 library(tigris)
 library(rgeos)
 library(sp)
+library(raster)
+library(tidyverse)
+
+select <- dplyr::select
 
 # find out which places are in which counties -------------------------
 
@@ -121,7 +124,7 @@ city_county_lookup <- place_total_pop %>%
 
 # filter our primary dataset to only keep the most populace places
 pop_place <- pop_place %>%
-  filter(GEOID %in% pop_city$GEOID) %>%
+  filter(GEOID %in% city_county_lookup$GEOID) %>%
   # add county to dataset
   left_join(city_county_lookup[, c("GEOID", "GEOID_county", "county_name")], by = "GEOID")
   
@@ -193,3 +196,57 @@ cleaned_df <- merge_demo(age, "age_pop", "age_moe")
 cleaned_df <- merge_demo(white, "white_perc", "white_moe")
 cleaned_df <- merge_demo(aa, "aa_perc", "aa_moe")
 cleaned_df <- merge_demo(hisp, "hisp_perc", "hisp_moe")
+
+# break off places as rows and add as columns -------------------
+
+# create separate dataframes of jsut palces and counties
+places <- cleaned_df %>%
+  filter(!is.na(GEOID_county))
+
+county <- cleaned_df %>%
+  filter(is.na(GEOID_county)) %>%
+  select(-GEOID_county, -county_name)
+
+# merge places and county dataframes back into cleaned dataframe
+cleaned_df <- left_join(places, county, by = c("GEOID_county"="GEOID"),
+                   suffix = c(".place", ".county")) %>%
+  select(-NAME.county) %>%
+  select(GEOID_place = GEOID, place_name = NAME.place, GEOID_county, county_name, everything())
+
+rm(total, age, white, aa, hisp, pop_county, pop)
+
+# find population density ------------------------------------
+
+# calculate areas of counties and places and palce in data frame
+# use function for both
+
+calc_area <- function(spatial_object) {
+  
+  data.frame(
+    GEOID = spatial_object@data$GEOID,
+    name = spatial_object@data$NAME,
+    area = area(spatial_object) / 1000000 # area in sq kilometers
+  ) 
+  
+}
+
+cnty_areas <- calc_area(cnty)
+place_areas <- calc_area(plc)
+  
+# merge county and place areas to final dataset,
+# so we can calculate population densities
+# we'll also log populations while we're here
+pop_dens <- cleaned_df %>%
+  left_join(place_areas[c("GEOID", "area")], by = c("GEOID_place" = "GEOID")) %>%
+  mutate(total_pop_log.place = log(total_pop.place),
+         pop_density.place = total_pop.place / area,
+         pop_density_log.place = total_pop_log.place / area) %>%
+  select(-area) %>%
+  left_join(cnty_areas[c("GEOID", "area")], by = c("GEOID_county" = "GEOID")) %>%
+  mutate(total_pop_log.county = log(total_pop.county),
+         pop_density.county = total_pop.county / area,
+         pop_density_log.county = total_pop_log.county / area) %>%
+  select(-area)
+
+# write out final dataset
+write_csv(pop_dens, "forsyth_comparison.csv")
