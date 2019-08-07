@@ -39,6 +39,7 @@ All the data and shape files are imported from the Census API.  As a result, the
 #### Find out which places are in what counties
 
 Our first task is to connect places and counties.  We'll do this through the following process:
+
 1.  Import NC county and place shape files;
 2.  Calculate whether places are wholly contained within counties, and if so assign the place to that county;
 3.  For places not wholly contained withing counties and containing over 15,000 people, manually assign.
@@ -182,7 +183,8 @@ And here is a list of the most populated place in each county:
 pop_place %>% 
   select(NAME, county_name) %>% 
   unique() %>%
-  kable(col.names = c("place name", "county name"))
+  kable(col.names = c("place name", "county name")) %>%
+  kable_styling("striped", full_width = F)
 ```
 
 #### Import county-level population data
@@ -306,6 +308,7 @@ kable(head(cleaned_df))
 #### Calculate population density
 
 We will account for urban and rural through population density.  We'll take the following steps to calculate population density:
+
 1.  Calculate the area in square kilometers of each county and place, and
 2.  Divide the county or place's population by the area to compute the density per square kilometer.
 

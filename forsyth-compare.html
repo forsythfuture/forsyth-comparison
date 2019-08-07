@@ -415,7 +415,12 @@ $(document).ready(function () {
 <p>All the data and shape files are imported from the Census API. As a result, the code should run as-is.</p>
 <div id="find-out-which-places-are-in-what-counties" class="section level4">
 <h4>Find out which places are in what counties</h4>
-<p>Our first task is to connect places and counties. We’ll do this through the following process: 1. Import NC county and place shape files; 2. Calculate whether places are wholly contained within counties, and if so assign the place to that county; 3. For places not wholly contained withing counties and containing over 15,000 people, manually assign.</p>
+<p>Our first task is to connect places and counties. We’ll do this through the following process:</p>
+<ol style="list-style-type: decimal">
+<li>Import NC county and place shape files;</li>
+<li>Calculate whether places are wholly contained within counties, and if so assign the place to that county;</li>
+<li>For places not wholly contained withing counties and containing over 15,000 people, manually assign.</li>
+</ol>
 <pre class="r"><code># find out which places are in which counties -------------------------
 
 # download place and county shape files from census API
@@ -546,8 +551,9 @@ rm(county_places, manual_add_county, place_long, place_names, place_table,
 <pre class="r"><code>pop_place %&gt;% 
   select(NAME, county_name) %&gt;% 
   unique() %&gt;%
-  kable(col.names = c(&quot;place name&quot;, &quot;county name&quot;))</code></pre>
-<table>
+  kable(col.names = c(&quot;place name&quot;, &quot;county name&quot;)) %&gt;%
+  kable_styling(&quot;striped&quot;, full_width = F)</code></pre>
+<table class="table table-striped" style="width: auto !important; margin-left: auto; margin-right: auto;">
 <thead>
 <tr>
 <th style="text-align:left;">
@@ -2306,7 +2312,11 @@ NA
 </div>
 <div id="calculate-population-density" class="section level4">
 <h4>Calculate population density</h4>
-<p>We will account for urban and rural through population density. We’ll take the following steps to calculate population density: 1. Calculate the area in square kilometers of each county and place, and 2. Divide the county or place’s population by the area to compute the density per square kilometer.</p>
+<p>We will account for urban and rural through population density. We’ll take the following steps to calculate population density:</p>
+<ol style="list-style-type: decimal">
+<li>Calculate the area in square kilometers of each county and place, and</li>
+<li>Divide the county or place’s population by the area to compute the density per square kilometer.</li>
+</ol>
 <p>Within this code block we will also create columns for the logarithm of population and logarithm of population density, for reasons addressed below.</p>
 <pre class="r"><code># find population density ------------------------------------
 
