@@ -1,0 +1,525 @@
+---
+title: "Forsyth County comparisons"
+author: "Shane Orr"
+date: "8/7/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, 
+                      warning=FALSE,
+                      message=FALSE)
+
+library(tidycensus)
+library(FFtools)
+library(tigris)
+library(rgeos)
+library(sp)
+library(raster)
+library(Hmisc)
+library(knitr)
+library(distances)
+library(kableExtra)
+library(gridExtra)
+
+library(tidyverse)
+# needed so that the dplyr select function overrides the raster select function
+select <- dplyr::select
+```
+
+## Data Import and cleaning
+
+*This section imports and cleans the data.  Skip down to the `Data Analysis` section if your not interested.*
+
+All the data and shape files are imported from the Census API.  As a result, the code should run as-is.
+
+#### Find out which places are in what counties
+
+Our first task is to connect places and counties.  We'll do this through the following process:
+1.  Import NC county and place shape files;
+2.  Calculate whether places are wholly contained within counties, and if so assign the place to that county;
+3.  For places not wholly contained withing counties and containing over 15,000 people, manually assign.
+
+```{r results='hide', cache=T}
+# find out which places are in which counties -------------------------
+
+# download place and county shape files from census API
+plc <- places(state = "NC")
+cnty <- counties(state = "NC")
+
+# calculate whether places are wholly contained within counties
+# store results in list, where each list element is a different county
+# and the element shows all places within the county
+county_places <- gContains(cnty, plc, byid=TRUE, returnDense=FALSE)
+
+places_counties <- function(county) {
+  
+  # if there are no palces in the county (value is null) then enter NA in data frame
+  # otherwise, enter the palces
+  places_within <- if (is.null(county_places[[county]])) NA else county_places[[county]]
+  
+  data.frame(county = county,
+             place = places_within)
+}
+
+# create single long dataframe where each row is a place / county
+# combination
+place_long <- map_df(seq_along(county_places), places_counties)
+
+# the places and counties are currently identified by numbers, which represent row
+# numbers in the original dataframes we want to add labels
+
+# create dataframes that are the only the row numebrs and labels of the places
+# and counties, these will then be merged on to the places_long dataframe
+# these dataframes serve as lookup tables between numbers and names
+convert_to_names <- function(df, col_name) {
+  
+  df <- df[c("GEOID", "NAME")]
+  colnames(df) <- c("GEOID", col_name)
+  df$row_num <- seq(1, nrow(df))
+  return(df)
+  
+}
+
+# create lookup tables
+place_names <- convert_to_names(plc@data, "place_name")
+county_names <- convert_to_names(cnty@data, "county_name")
+
+# merge lookup tables that contain names with table that contains numbers
+# and which places are within what counties
+place_table <- place_long %>%
+  left_join(county_names, by = c("county" = "row_num")) %>%
+  left_join(place_names, by = c("place" = "row_num")) %>%
+  select(-county, -place) %>%
+  rename(GEOID_county = GEOID.x, GEOID_place = GEOID.y)
+
+# population ---------------------------------
+
+# load census variable names
+# needed so we can identify which tables and variables to pull
+datasets <- c("acs1", "acs1/subject", "acs1/profile")
+
+vars <- map_df(datasets, function(x) load_variables(year = 2017, dataset = x))
+
+# import county and place population datasets -------------------
+
+# import palce and identify largest population place in each county
+pop_place <- get_acs(geography = "place",
+                     state = 'nc',
+                     year = 2017,
+                     table = "DP05") %>%
+                 mutate(geography = "place") %>%
+  # merge variable descriptions
+  left_join(vars, by = c("variable" = "name"))
+
+# identify largest palce in county
+place_total_pop <- pop_place %>%
+  # isolate total place populations
+  filter(label == "Estimate!!SEX AND AGE!!Total population") %>%
+  # join county lookup table, so we know what county the palce is in
+  left_join(place_table, by = c("GEOID" = "GEOID_place")) %>%
+  select(-place_name)
+
+# we'll manually add counties to cities with population over 10000 and werent matched
+# these represent places in more than one county
+manual_add_county <- place_total_pop %>%
+  filter((is.na(county_name) & estimate > 15000)) %>%
+  select(GEOID)
+
+add_counties <- c(37001, 37183, 37135, 37101, 37063, 37139, 37035,37081,
+                  37025, 37067, 37179, 37183, 37183, 37065, 37057, 37069)
+
+manual_add_county$GEOID_county <- add_counties
+
+# add missing county values
+place_total_pop <- place_total_pop %>%
+  left_join(manual_add_county, by = "GEOID") %>%
+  mutate(GEOID_county.x = ifelse(is.na(GEOID_county.x), GEOID_county.y, GEOID_county.x)) %>%
+  select(-GEOID_county.y) %>%
+  rename(GEOID_county = GEOID_county.x) %>%
+  # now we need to add the county names for these missing values
+  left_join(county_names, by = c("GEOID_county" = "GEOID")) %>%
+  mutate(county_name.x = ifelse(is.na(county_name.x), county_name.y, county_name.x)) %>%
+  select(-county_name.y, -row_num) %>%
+  rename(county_name = county_name.x)
+```
+
+#### Select most populated place in each county
+
+Now, we'll select the most populated city within each county.
+
+```{r cache=T}
+# select most populated city in each county
+city_county_lookup <- place_total_pop %>%
+  group_by(GEOID_county) %>%
+  # create column showing the most populated city
+  mutate(most_pop = max(estimate)) %>%
+  # filter for this population
+  filter(estimate == most_pop,
+         # remove NA
+         !is.na(GEOID_county)) %>%
+  ungroup() %>%
+  select(GEOID, NAME, GEOID_county, county_name, estimate)
+
+# filter our primary dataset to only keep the most populace places
+pop_place <- pop_place %>%
+  filter(GEOID %in% city_county_lookup$GEOID) %>%
+  # add county to dataset
+  left_join(city_county_lookup[, c("GEOID", "GEOID_county", "county_name")], by = "GEOID")
+  
+# remove unneeded items
+rm(county_places, manual_add_county, place_long, place_names, place_table,
+   place_total_pop, add_counties, county_names)
+
+```
+
+And here is a list of the most populated place in each county:
+
+```{r cache=T}
+pop_place %>% 
+  select(NAME, county_name) %>% 
+  unique() %>%
+  kable(col.names = c("place name", "county name"))
+```
+
+#### Import county-level population data
+
+We'll now import county-level population data and attach it to our data set containing place-level population data of the most populated place in each county.
+
+```{r cache=T}
+
+# import county population data and merge with population
+
+# import county data
+pop_county <- get_acs(geography = "county",
+                     state = 'nc',
+                     year = 2017,
+                     table = "DP05") %>%
+  mutate(geography = "county") %>%
+  # merge variable descriptions
+  left_join(vars, by = c("variable" = "name"))
+
+# stack county data to place data
+pop <- bind_rows(pop_place, pop_county)
+```
+
+We now have a complete data set of county and place population data.  The next section cleans up the data by demographic
+
+#### Separate population data by demographic
+
+We'll filter for our required demographics by creating four separate data sets:
+
+1.  Total population;
+2.  Median age;
+3.  Percentage white;
+4.  Percentage African american; and
+5.  Percentage Hispanic / Latino.
+
+```{r cache=T}
+# filter population data ------------------------
+
+# we'll filter the data by pulling out the total population, 
+# race, and age data separately
+# then, we will recombine
+
+# total population
+total <- pop %>%
+  # isolate total place populations
+  filter(label == "Estimate!!SEX AND AGE!!Total population")
+
+# median age
+age <- pop %>%
+  filter(label == "Estimate!!SEX AND AGE!!Median age (years)")
+
+# race / ethnicity
+white <- pop %>%
+  filter(str_detect(label, "^Percent.*!!Not Hispanic or Latino!!White alone"))
+
+aa <- pop %>%
+  filter(label == "Percent!!RACE!!One race!!Black or African American")
+
+hisp <- pop %>%
+  filter(str_detect(label, "^Percent!!HISPANIC.*of any race.$"))
+```
+
+We'll now recombine these five data sets into one data set, so we can have a single cleaned data set.  We'll combine them as additional columns on a single data set.
+
+```{r cache=T}
+# recombine population data into one dataset -----------------------
+
+# create the skeleton dataset that the other datasets will be attached to
+# it will be based on the total dataset
+cleaned_df <- total %>%
+  select(GEOID, NAME, total_pop = estimate, total_moe = moe, GEOID_county, county_name)
+
+# create a function to merge the other datasets to the cleaned on
+merge_demo <- function(df, estimate_col, moe_col) {
+  
+  df <- df %>%
+    select(GEOID, estimate, moe)
+  
+  colnames(df) <- c("GEOID", estimate_col, moe_col)
+  
+  cleaned <- cleaned_df %>%
+    left_join(df, by = "GEOID")
+  
+  return(cleaned)
+  
+}
+cleaned_df <- merge_demo(age, "age_pop", "age_moe")
+cleaned_df <- merge_demo(white, "white_perc", "white_moe")
+cleaned_df <- merge_demo(aa, "aa_perc", "aa_moe")
+cleaned_df <- merge_demo(hisp, "hisp_perc", "hisp_moe")
+
+kable(head(cleaned_df))
+```
+
+#### Separate places and counties as different columns
+
+Right now, our data set is stacked, meaning places and counties are in the same columns.  We want them in different columns.
+
+```{r cache=T}
+# break off places as rows and add as columns -------------------
+
+# create separate dataframes of jsut places and counties
+places <- cleaned_df %>%
+  filter(!is.na(GEOID_county))
+
+county <- cleaned_df %>%
+  filter(is.na(GEOID_county)) %>%
+  select(-GEOID_county, -county_name)
+
+# merge places and county dataframes back into cleaned dataframe
+cleaned_df <- left_join(places, county, by = c("GEOID_county"="GEOID"),
+                   suffix = c(".place", ".county")) %>%
+  select(-NAME.county) %>%
+  select(GEOID_place = GEOID, place_name = NAME.place, GEOID_county, county_name, everything())
+
+rm(total, age, white, aa, hisp, pop_county, pop)
+
+kable(head(cleaned_df))
+```
+
+#### Calculate population density
+
+We will account for urban and rural through population density.  We'll take the following steps to calculate population density:
+1.  Calculate the area in square kilometers of each county and place, and
+2.  Divide the county or place's population by the area to compute the density per square kilometer.
+
+Within this code block we will also create columns for the logarithm of population and logarithm of population density, for reasons addressed below.
+
+```{r cache=T}
+# find population density ------------------------------------
+
+# calculate areas of counties and places and palce in data frame
+# use function for both
+
+calc_area <- function(spatial_object) {
+  
+  data.frame(
+    GEOID = spatial_object@data$GEOID,
+    name = spatial_object@data$NAME,
+    area = area(spatial_object) / 1000000 # area in sq kilometers
+  ) 
+  
+}
+
+cnty_areas <- calc_area(cnty)
+place_areas <- calc_area(plc)
+  
+# merge county and place areas to final dataset,
+# so we can calculate population densities
+# we'll also log populations while we're here
+pop_dens <- cleaned_df %>%
+  left_join(place_areas[c("GEOID", "area")], by = c("GEOID_place" = "GEOID")) %>%
+  mutate(total_pop_log.place = log(total_pop.place),
+         pop_density.place = total_pop.place / area,
+         pop_density_log.place = total_pop_log.place / area) %>%
+  select(-area) %>%
+  left_join(cnty_areas[c("GEOID", "area")], by = c("GEOID_county" = "GEOID")) %>%
+  mutate(total_pop_log.county = log(total_pop.county),
+         pop_density.county = total_pop.county / area,
+         pop_density_log.county = total_pop_log.county / area) %>%
+  select(-area)
+```
+
+## Data Analysis
+
+### Exploratory analysis
+
+#### Population skewness
+
+Population numbers are often right skewed, as some localities have extremely large populations.  Due to this, it often makes sense to log transform populations.  Such a transformation can convert populations to a normal distribution.  
+
+To highlight this, the plot below shows the distributions of place and county populations.  Blue is place and red is county.  The left plot shows untransformed populations, while the right plot signifies log transformed numbers.  We see that the untransformed populations exhibit a large right skew, while the log transformed populations somewhat mirror a normal distribution.
+
+Given this, we'll created models with both log transformed and non-transformed population parameters.
+
+```{r}
+# this function creates density plots
+density_plot <- function(df, x_place, x_county, x_title, main_title) {
+  
+  ggplot(df) +
+    geom_density(aes(x={{ x_place }}, fill="#4287f5"), alpha=0.4) +
+    geom_density(aes(x={{ x_county }}, fill="#f57542"), alpha=0.4) +
+    labs(x = x_title) +
+    theme_minimal() +
+    theme(legend.position="none")
+
+}
+
+pop_plot <- density_plot(pop_dens, total_pop.place, total_pop.county,
+                         "Total Population")
+pop_log_plot <- density_plot(pop_dens, 
+                              total_pop_log.place, total_pop_log.county,
+                              "Total Log Population")
+
+grid.arrange(pop_plot, pop_log_plot, nrow=1, top="Population")
+```
+
+#### Correlations
+
+The table below shows a correlation matrix of all variables.  Correlations plus or minus .9 are in red, while those plus or minus .7 are in blue.
+
+```{r}
+# create vectors of columns to be used
+county_col <- c("age_pop.county", "white_perc.county","aa_perc.county", "hisp_perc.county")
+place_col <- c("age_pop.place", "white_perc.place","aa_perc.place", "hisp_perc.place")
+county_non_log <- c("total_pop.county", "pop_density.county")
+place_non_log <- c("total_pop.place", "pop_density.place")
+county_log <- c("total_pop_log.county", "pop_density_log.county")
+place_log <- c("total_pop_log.place", "pop_density_log.place")
+
+all_columns <- c(county_col, place_col, county_non_log, place_non_log)
+
+rcorr(as.matrix(pop_dens[all_columns]))[["r"]] %>%
+  as.data.frame() %>%
+  mutate(var = colnames(.)) %>%
+  select(var, everything()) %>%
+  mutate_if(is.numeric, function(x) {
+    cell_spec(round(x, 2),
+              color = ifelse(abs(x) > .9, "red", 
+                             ifelse(abs(x) > .7, "blue", "black")))
+  }) %>%
+  kable(format = "html", escape = F) %>%
+  kable_styling("striped")
+
+```
+
+The African American and white variable are highly correlated, which isn't surprising on reflection.  We'll take out African American for now.  We're taking out African American instead of white because African American estimates have wider variance.
+
+Place and county populations are also highly correlated.  So, our place and county model will only include county populations.
+
+```{r}
+# update columns without african american and place numbers
+county_col <- c("age_pop.county", "white_perc.county", "hisp_perc.county")
+place_col <- c("age_pop.place", "white_perc.place", "hisp_perc.place")
+place_non_log <- c("pop_density.place")
+place_log <- c("pop_density_log.place")
+```
+
+### Calculate Euclidean distances
+
+```{r}
+# create columns for different models
+all_cols_non_log <- c(county_non_log, county_col, place_col, place_non_log)
+all_cols_log <- c(county_log, county_col, place_col, place_log)
+counties_non_log <- c(county_non_log, county_col)
+counties_log <- c(county_log, county_col)
+```
+
+Now, we will calculate the Euclidean distances From Forsyth to all NC counties for four models with the following variables:
+
+1.  Counties and places, populations not logged:
+  +  `r all_cols_non_log`
+2.   Counties and places, populations logged:
+  +  `r all_cols_log`
+3.   Counties only, populations not logged:
+  +  `r counties_non_log`
+4.   Counties only, populations logged:
+  +  `r counties_log`
+
+The code block below creates a function that we'll use to run all models.
+
+```{r}
+# create function to calculate distances and order results
+euc_dist <- function(distance_df, dist_columns, dist_weights) {
+  
+  df <- distance_df[dist_columns] %>%
+    mutate_all(scale) %>%
+    as.matrix()
+  
+  # this function calculates Euclidean distance
+  dist <- distances(data = df,
+                    weights = dist_weights
+                    ) %>%
+    as.matrix() %>%
+    as.data.frame()
+  
+  # find which row forsyth is, so we can extract it from distance DF
+  forsyth_row <- which(distance_df$county_name == "Forsyth")
+  
+  # only keep this column of distance matrix
+  forsyth_dist <- dist[forsyth_row]
+  
+  # add county names to forsyth distance matrix
+  forsyth_dist$county <- distance_df$county_name
+  
+  colnames(forsyth_dist) <- c("distance", "county")
+  
+  # to verify counties align, Forsyth's distance should be zero
+  forsyth_dist[forsyth_dist$county == "Forsyth", ]
+  
+  # remove Forsyth and rank counties from smallest to largest
+  forsyth_dist <- forsyth_dist %>%
+    filter(county != "Forsyth") %>%
+    arrange(distance) %>%
+    select(county, distance)
+  
+  return(forsyth_dist)
+
+}
+```
+
+Now, let's save the model parameters and run the models.  The only parameters are the variables and weights.  We'll weight all variables with a 1, but you could make a case that the two race variables should be weighted at .5, which would collectively give them the same weight as the other variables.  But, I doubt this would have any impact.
+
+```{r}
+# create parameters for models -------
+
+# columns for each model
+dist_columns <- list(
+    all_cols_non_log,
+    all_cols_log,
+    counties_non_log,
+    counties_log
+)
+
+# create weights for models
+w_all_cols <- rep(1, length(all_cols_non_log))
+w_county <- rep(1, length(counties_non_log))
+
+dist_weights <- list(
+  w_all_cols,
+  w_all_cols,
+  w_county,
+  w_county
+)
+
+# calculate distances for four models
+euc_dist <- map2(dist_columns, dist_weights, 
+                 euc_dist, distance_df = pop_dens)
+
+```
+
+And here are the final results from all four models, ranks from closest to farthest:
+
+```{r}
+# convert into single dataframe
+bind_cols(euc_dist) %>%
+  kable() %>%
+  kable_styling("striped") %>%
+  add_header_above(c("County / Place | Non-log" = 2, 
+                     "County / Place | log" = 2, 
+                     "County | Non-log" = 2, 
+                     "County | log" = 2))
+```

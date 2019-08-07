@@ -3,6 +3,7 @@ library(FFtools)
 library(tigris)
 library(rgeos)
 library(sp)
+library(sf)
 library(raster)
 library(tidyverse)
 
@@ -12,7 +13,7 @@ select <- dplyr::select
 
 # download place and county shape files from census API
 plc <- places(state = "NC")
-cnty <- counties(state = "nc")
+cnty <- counties(state = "NC")
 
 # calculate whether places are wholly contained within counties
 # store results in list, where each list element is a different county
