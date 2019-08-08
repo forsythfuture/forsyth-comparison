@@ -9,9 +9,12 @@ output:
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE, 
+knitr::opts_chunk$set(echo=TRUE, 
                       warning=FALSE,
                       message=FALSE)
+```
+
+```{r results='hide', message=FALSE}
 
 library(tidycensus)
 library(FFtools)
@@ -24,9 +27,10 @@ library(knitr)
 library(distances)
 library(kableExtra)
 library(gridExtra)
-
 library(tidyverse)
+
 # needed so that the dplyr select function overrides the raster select function
+
 select <- dplyr::select
 ```
 

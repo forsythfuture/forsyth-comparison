@@ -409,6 +409,21 @@ $(document).ready(function () {
 </ul>
 </div>
 
+<pre class="r"><code>library(tidycensus)
+library(FFtools)
+library(tigris)
+library(rgeos)
+library(sp)
+library(raster)
+library(Hmisc)
+library(knitr)
+library(distances)
+library(kableExtra)
+library(gridExtra)
+
+library(tidyverse)
+# needed so that the dplyr select function overrides the raster select function
+select &lt;- dplyr::select</code></pre>
 <div id="data-import-and-cleaning" class="section level2">
 <h2>Data Import and cleaning</h2>
 <p><em>This section imports and cleans the data. Skip down to the <code>Data Analysis</code> section if your not interested.</em></p>
