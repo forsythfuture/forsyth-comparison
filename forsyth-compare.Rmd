@@ -27,6 +27,7 @@ library(knitr)
 library(distances)
 library(kableExtra)
 library(gridExtra)
+library(heatmaply)
 library(tidyverse)
 
 # needed so that the dplyr select function overrides the raster select function
@@ -455,12 +456,15 @@ The code block below creates a function that we'll use to run all models.
 # create function to calculate distances and order results
 euc_dist <- function(distance_df, dist_columns, dist_weights) {
   
+  # df <- distance_df[dist_columns] %>%
+  #   mutate_all(scale) %>%
+  #   as.matrix()
   df <- distance_df[dist_columns] %>%
-    mutate_all(scale) %>%
     as.matrix()
   
   # this function calculates Euclidean distance
   dist <- distances(data = df,
+                    normalize = "studentize",
                     weights = dist_weights
                     ) %>%
     as.matrix() %>%
@@ -518,8 +522,9 @@ dist_weights <- list(
 # calculate distances for four models
 euc_dist <- map2(dist_columns, dist_weights, 
                  euc_dist, distance_df = pop_dens)
-
 ```
+
+#### Euclidean distance final results
 
 And here are the final results from all four models, ranks from closest to farthest:
 
@@ -532,4 +537,27 @@ bind_cols(euc_dist) %>%
                      "County / Place | log" = 2, 
                      "County | Non-log" = 2, 
                      "County | log" = 2))
+```
+
+#### Dendogram and heatmap
+
+Dendogram and heatmap for counties with non-logged popualtion. All variables are scaled to have a mean of zero and sandard deviation of 1.
+
+```{r fig.height=14, fig.width=10}
+pop_dens <- as.data.frame(pop_dens, stringsAsFactors = F)
+row.names(pop_dens) <- pop_dens$county_name
+
+heatmaply(pop_dens[c(counties_non_log, "county_name")], 
+          margins = c(60,100,40,20),
+          xlab = "Features", ylab = "Counties", scale='column',
+          main = "Dendogram heatmap of Counties non-log population")
+```
+
+Here is the same plot, but with logged populations.
+
+```{r fig.height=14, fig.width=10}
+heatmaply(pop_dens[c(counties_log, "county_name")], 
+          margins = c(60,100,40,20),
+          xlab = "Features", ylab = "Counties", scale='column',
+          main = "Dendogram heatmap of Counties log population")
 ```
